@@ -158,9 +158,15 @@ export class BookingsController {
 
   @Post(':id/check-in')
   async checkIn(@Param('id') id: number) {
-    const b = await this.bookings.findOne({ where: { id } });
+    const b = await this.bookings.findOne({ where: { id }, relations: ['room'] });
     if (!b) throw new NotFoundException('订单不存在');
     if (b.status !== 'booked') throw new BadRequestException('仅待入住订单可办理入住');
+    if ((b.room as any).status === 'awaiting_linen') {
+      throw new ConflictException(`布草车尚未到达，${b.room.code} 房为「待布草」状态无法交付。可请客人稍候、安排下午茶，或在保洁与布草页为客人换房`);
+    }
+    if (['dirty', 'cleaning', 'maintenance'].includes((b.room as any).status)) {
+      throw new ConflictException(`${b.room.code} 房当前为「${(b.room as any).status}」，尚未完成保洁/维修，暂不能入住`);
+    }
     b.status = 'checked_in';
     b.actualCheckIn = new Date();
     return this.bookings.save(b);

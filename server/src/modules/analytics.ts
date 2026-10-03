@@ -5,7 +5,8 @@ import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 import {
   Booking, BreakfastPrep, Compensation, DailyInventory, Incident,
-  LinenDelivery, LinenItem, MaintenanceTicket, Review, Room, RoomType, CleaningTask,
+  LinenAction, LinenBlock, LinenDelivery, LinenItem, MaintenanceTicket,
+  Review, Room, RoomType, CleaningTask,
 } from '../entities';
 import { Roles } from '../common/auth';
 import { addDays, diffDays, eachDay, overlapNights, round2, todayStr } from '../common/util';
@@ -30,6 +31,8 @@ export class AnalyticsController {
     @InjectRepository(BreakfastPrep) private preps: Repository<BreakfastPrep>,
     @InjectRepository(DailyInventory) private inventory: Repository<DailyInventory>,
     @InjectRepository(MaintenanceTicket) private maintenance: Repository<MaintenanceTicket>,
+    @InjectRepository(LinenBlock) private linenBlocks: Repository<LinenBlock>,
+    @InjectRepository(LinenAction) private linenActions: Repository<LinenAction>,
   ) {}
 
   private async bookingsInRange(from: string, to: string) {
@@ -254,12 +257,149 @@ export class AnalyticsController {
     }
     return { ok: true, applied: sellableByType, range: { from: body.from, to: body.to } };
   }
+
+  // 布草延迟专项复盘：延迟次数/率、受堵房间与待客成本，以及三类处置建议
+  @Get('linen-advice')
+  async linenAdvice() {
+    const deliveries = await this.deliveries.find({ order: { expectedAt: 'ASC' } });
+    const delayed = deliveries.filter((d) => d.status === 'delayed');
+    const delayRate = deliveries.length ? delayed.length / deliveries.length : 0;
+    const blocks = await this.linenBlocks.find();
+    const comps = await this.compensations.find();
+    const items = await this.linen.find({ order: { id: 'ASC' } });
+    const actions = await this.linenActions.find({ order: { id: 'DESC' } });
+    const blockComps = comps.filter((c) => c.linenBlockId);
+    const guestCost = round2(blockComps.reduce((s, c) => s + Number(c.amount), 0));
+    const totalWait = blocks.reduce((s, b) => s + b.waitMinutes, 0);
+
+    // 按供应商统计延迟（未登记供应商的归为“现洗涤供应商”）
+    const supplierRows = Object.values(deliveries.reduce((acc: Record<string, any>, d) => {
+      const name = d.supplier || '现洗涤供应商';
+      acc[name] = acc[name] || { supplier: name, total: 0, delayed: 0, delayRate: 0 };
+      acc[name].total += 1;
+      if (d.status === 'delayed') acc[name].delayed += 1;
+      acc[name].delayRate = round2((acc[name].delayed / acc[name].total) * 100);
+      return acc;
+    }, {}));
+    const worstSupplier = [...supplierRows].sort((a, b) => b.delayRate - a.delayRate)[0];
+
+    // 安全库存建议：现有安全库存不足总量 25% 的布草，建议补到 25%
+    const stockAdvice = items.map((it) => {
+      const suggested = Math.max(it.safetyStock, Math.ceil(it.total * 0.25));
+      return {
+        item: it.item, total: it.total,
+        available: it.total - it.inUse - it.inWash - it.damaged,
+        currentSafety: it.safetyStock, suggestedSafety: suggested,
+        needRaise: suggested > it.safetyStock,
+      };
+    });
+
+    const advices: any[] = [];
+    if (delayed.length >= 2) {
+      advices.push({
+        type: 'safety_stock',
+        title: '增加布草安全库存',
+        evidence: `旺季已发生 ${delayed.length} 次布草延迟（延迟率 ${round2(delayRate * 100)}%），${blocks.length} 间房一度待布草，客人累计等待约 ${totalWait} 分钟`,
+        suggestion: '按总保有量 25% 设置安全库存，库存触及安全线即提前催送并启用备用布草',
+        payload: stockAdvice.filter((s) => s.needRaise),
+      });
+      advices.push({
+        type: 'supplier',
+        title: '调整洗涤供应商',
+        evidence: worstSupplier
+          ? `「${worstSupplier.supplier}」${worstSupplier.total} 次配送中 ${worstSupplier.delayed} 次延迟（${worstSupplier.delayRate}%），山路通行能力不足`
+          : '暂无供应商配送数据',
+        suggestion: '增加一家县城方向备用洗涤厂并签订旺季延时赔付条款，山路预警日改清晨首班送布',
+        candidates: ['县城洁净洗涤厂（清晨首班）', '邻镇云洗供应链（备用）'],
+      });
+      advices.push({
+        type: 'peak_limit',
+        title: '限制高峰连住订单',
+        evidence: `布草周转在连住高峰连续掉链，待客补偿已支出 ¥${guestCost}`,
+        suggestion: '高峰日期各房型保留 1 间布草周转缓冲房，暂停连住 3 晚以上 OTA 订单超售',
+      });
+    } else if (delayed.length === 1) {
+      advices.push({
+        type: 'safety_stock',
+        title: '关注布草库存',
+        evidence: `已发生 1 次布草延迟（延迟率 ${round2(delayRate * 100)}%），若多次出现将影响入住交付`,
+        suggestion: '建议预置安全库存并关注山路天气，暂不需要限制订单',
+        payload: stockAdvice.filter((s) => s.needRaise),
+      });
+    }
+
+    return {
+      deliveryCount: deliveries.length,
+      delayedCount: delayed.length,
+      delayRate: round2(delayRate * 100),
+      blockCount: blocks.length,
+      activeBlockCount: blocks.filter((b) => b.status === 'active').length,
+      totalWaitMinutes: totalWait,
+      guestCompensation: guestCost,
+      suppliers: supplierRows,
+      stockAdvice,
+      advices,
+      actions,
+    };
+  }
+
+  // 落地处置动作：增加安全库存 / 记录更换供应商 / 限制高峰连住房量
+  @Post('linen-action')
+  async linenAction(@Body() body: {
+    type: string; supplier?: string; items?: { item: string; safetyStock: number }[];
+    from?: string; to?: string;
+  }) {
+    if (body.type === 'safety_stock') {
+      const rows = body.items || [];
+      if (!rows.length) throw new BadRequestException('请提供要调整的布草安全库存');
+      for (const r of rows) {
+        const item = await this.linen.findOne({ where: { item: r.item } });
+        if (!item) throw new BadRequestException(`布草「${r.item}」不存在`);
+        item.safetyStock = Math.max(0, Math.floor(r.safetyStock));
+        await this.linen.save(item);
+      }
+      const action = await this.linenActions.save(this.linenActions.create({
+        type: 'safety_stock',
+        detail: `上调安全库存：${rows.map((r) => `${r.item}→${r.safetyStock}件`).join('、')}`,
+      }));
+      return { ok: true, action };
+    }
+    if (body.type === 'supplier') {
+      if (!body.supplier) throw new BadRequestException('请填写新供应商名称');
+      const action = await this.linenActions.save(this.linenActions.create({
+        type: 'supplier',
+        detail: `调整洗涤供应商为「${body.supplier}」，签订旺季延时赔付与备用班次条款`,
+      }));
+      return { ok: true, action };
+    }
+    if (body.type === 'peak_limit') {
+      if (!body.from || !body.to) throw new BadRequestException('请选择高峰日期区间');
+      const types = await this.types.find();
+      let changed = 0;
+      for (const t of types) {
+        for (const d of eachDay(body.from, addDays(body.to, 1))) {
+          const inv = await this.inventory.findOne({ where: { roomTypeId: t.id, date: d } });
+          if (inv && inv.sellable > 1) {
+            inv.sellable = Math.min(inv.sellable, inv.total - 1);
+            await this.inventory.save(inv);
+            changed += 1;
+          }
+        }
+      }
+      const action = await this.linenActions.save(this.linenActions.create({
+        type: 'peak_limit',
+        detail: `${body.from} ~ ${body.to} 高峰区间每房型保留 1 间布草周转缓冲房，更新 ${changed} 条库存`,
+      }));
+      return { ok: true, changed, action };
+    }
+    throw new BadRequestException('动作类型需为 safety_stock / supplier / peak_limit');
+  }
 }
 
 @Module({
   imports: [TypeOrmModule.forFeature([
     Booking, Room, RoomType, Incident, Review, Compensation, CleaningTask,
-    LinenItem, LinenDelivery, BreakfastPrep, DailyInventory, MaintenanceTicket,
+    LinenItem, LinenDelivery, LinenBlock, LinenAction, BreakfastPrep, DailyInventory, MaintenanceTicket,
   ])],
   controllers: [AnalyticsController],
 })

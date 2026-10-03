@@ -12,8 +12,8 @@ async function bootstrap() {
 
   const config = new DocumentBuilder()
     .setTitle('乡村民宿旺季运营平台 API')
-    .setDescription('房态/保洁/布草/早餐/差评补偿 全链路接口')
-    .setVersion('1.0')
+    .setDescription('房态/保洁/布草(含待布草阻塞与待客补偿)/早餐/差评补偿 全链路接口')
+    .setVersion('1.1')
     .addBearerAuth()
     .build();
   const doc = SwaggerModule.createDocument(app, config);

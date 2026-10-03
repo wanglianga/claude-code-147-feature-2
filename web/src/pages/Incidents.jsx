@@ -4,7 +4,7 @@ import {
   Table, Tabs, Tag, message,
 } from 'antd';
 import dayjs from 'dayjs';
-import api, { INCIDENT_TYPES, INCIDENT_STATUS, REVIEW_CATEGORIES } from '../api';
+import api, { INCIDENT_TYPES, INCIDENT_STATUS, REVIEW_CATEGORIES, LINEN_COMP_TYPES } from '../api';
 
 export default function Incidents() {
   const [incidents, setIncidents] = useState([]);
@@ -81,7 +81,11 @@ export default function Incidents() {
           children: (
             <Table dataSource={compensations} rowKey="id" pagination={false} columns={[
               { title: '时间', dataIndex: 'createdAt', width: 150, render: (v) => dayjs(v).format('MM-DD HH:mm') },
-              { title: '类型', dataIndex: 'type', width: 90, render: (v) => <Tag>{{ cash: '现金', voucher: '补偿券', refund: '退款' }[v]}</Tag> },
+              { title: '类型', dataIndex: 'type', width: 100, render: (v) => {
+                const all = { cash: '现金', voucher: '补偿券', refund: '退款',
+                  ...Object.fromEntries(Object.entries(LINEN_COMP_TYPES).map(([k, x]) => [k, x.text])) };
+                return <Tag color={LINEN_COMP_TYPES[v]?.color}>{all[v]}</Tag>;
+              } },
               { title: '金额', dataIndex: 'amount', width: 90, render: (v) => `¥${v}` },
               { title: '券码', dataIndex: 'voucherCode', width: 120, render: (v) => v || '-' },
               { title: '订单', dataIndex: 'bookingId', width: 80, render: (v) => v ? `#${v}` : '-' },

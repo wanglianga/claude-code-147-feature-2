@@ -4,7 +4,7 @@ import {
   Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Timeline, message,
 } from 'antd';
 import dayjs from 'dayjs';
-import api, { BOOKING_STATUS, INCIDENT_TYPES, INCIDENT_STATUS, TASK_STATUS, DIRTINESS, REVIEW_CATEGORIES } from '../api';
+import api, { BOOKING_STATUS, INCIDENT_TYPES, INCIDENT_STATUS, TASK_STATUS, DIRTINESS, REVIEW_CATEGORIES, LINEN_COMP_TYPES } from '../api';
 
 export default function Bookings() {
   const [list, setList] = useState([]);
@@ -51,7 +51,12 @@ export default function Bookings() {
     { title: '订单号', dataIndex: 'code', width: 100 },
     { title: '客人', dataIndex: 'guestName', width: 110 },
     { title: '渠道', dataIndex: ['channel', 'name'], width: 90 },
-    { title: '房间', width: 110, render: (_, r) => `${r.room.code} ${r.roomType.name}` },
+    { title: '房间', width: 130, render: (_, r) => (
+      <span>
+        {r.room.code} {r.roomType.name}
+        {r.room.status === 'awaiting_linen' && <Tag color="volcano" style={{ marginLeft: 4 }}>待布草</Tag>}
+      </span>
+    ) },
     { title: '入住', dataIndex: 'checkIn', width: 105 },
     { title: '离店', dataIndex: 'checkOut', width: 105 },
     { title: '人数', width: 90, render: (_, r) => `${r.adults}大${r.children}小${r.extraBeds ? ` +${r.extraBeds}床` : ''}${r.pets ? ` 🐾${r.pets}` : ''}` },
@@ -218,7 +223,7 @@ function BookingDetail({ detail, refresh }) {
             {detail.compensations.length > 0 && (
               <Table style={{ marginTop: 12 }} size="small" rowKey="id" dataSource={detail.compensations}
                 pagination={false} columns={[
-                  { title: '类型', dataIndex: 'type', render: (v) => ({ cash: '现金', voucher: '补偿券', refund: '退款' }[v]) },
+                  { title: '类型', dataIndex: 'type', render: (v) => LINEN_COMP_TYPES[v]?.text || { cash: '现金', voucher: '补偿券', refund: '退款' }[v] },
                   { title: '金额', dataIndex: 'amount', render: (v) => `¥${v}` },
                   { title: '券码', dataIndex: 'voucherCode', render: (v) => v || '-' },
                   { title: '状态', dataIndex: 'status', render: (v) => ({ issued: '已发放', used: '已核销', cancelled: '已作废' }[v]) },

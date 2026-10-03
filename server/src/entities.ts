@@ -42,7 +42,8 @@ export class Room {
   @PrimaryGeneratedColumn() id: number;
   @Column({ unique: true }) code: string;
   @Column({ default: 1 }) floor: number;
-  // 保洁状态：clean 已清洁 | dirty 待打扫 | cleaning 打扫中 | inspected 已验收 | maintenance 维修中
+  // clean 已清洁 | dirty 待打扫 | cleaning 打扫中 | inspected 已验收 | maintenance 维修中
+  // awaiting_linen 待布草：保洁已完成但布草未到，无法交付入住
   @Column({ default: 'clean' }) status: string;
   @Column() roomTypeId: number;
   @ManyToOne(() => RoomType) @JoinColumn({ name: 'roomTypeId' }) roomType: RoomType;
@@ -151,6 +152,7 @@ export class LinenItem {
   @Column({ default: 0 }) inUse: number;
   @Column({ default: 0 }) inWash: number;
   @Column({ default: 0 }) damaged: number;
+  @Column({ default: 0 }) safetyStock: number; // 安全库存（多次延迟后平台建议上调）
 }
 
 @Entity('linen_deliveries')
@@ -161,6 +163,40 @@ export class LinenDelivery {
   @Column({ type: 'timestamptz' }) expectedAt: Date;
   @Column({ type: 'timestamptz', nullable: true }) arrivedAt: Date;
   @Column({ default: 'scheduled' }) status: string; // scheduled | delivered | delayed
+  @Column({ default: '' }) reason: string; // 延迟原因（山路堵车/洗涤厂积压…）
+  @Column({ default: '' }) supplier: string; // 洗涤供应商
+  @CreateDateColumn() createdAt: Date;
+}
+
+// 布草缺口阻塞：保洁完成但布草车未到，房间无法按时交付
+@Entity('linen_blocks')
+export class LinenBlock {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() roomId: number;
+  @ManyToOne(() => Room) @JoinColumn({ name: 'roomId' }) room: Room;
+  @Column({ nullable: true }) bookingId: number; // 等待入住的订单
+  @Column({ nullable: true }) deliveryId: number; // 关联配送单（到达后自动恢复）
+  @Column({ nullable: true }) incidentId: number; // 关联布草延迟事件
+  @Column({ default: '' }) item: string;      // 缺口布草（空=整套）
+  @Column({ default: 1 }) shortage: number;   // 缺口套数
+  @Column({ type: 'timestamptz' }) expectedAt: Date;  // 布草预计到达
+  @Column({ type: 'timestamptz' }) blockedSince: Date; // 进入待布草的时间
+  @Column({ type: 'timestamptz', nullable: true }) resolvedAt: Date;
+  // active 待布草 | resolved 布草到达已恢复 | reassigned 已为客人换房
+  @Column({ default: 'active' }) status: string;
+  @Column({ default: 0 }) waitMinutes: number; // 客人等待时长（登记时估算/解决时实际）
+  @Column({ default: '' }) transferRoomIds: string; // 可调拨房间 id 列表，逗号分隔
+  @Column({ default: '' }) note: string;
+  @CreateDateColumn() createdAt: Date;
+}
+
+// 平台针对重复布草延迟的处置动作记录（安全库存/供应商/高峰限制）
+@Entity('linen_actions')
+export class LinenAction {
+  @PrimaryGeneratedColumn() id: number;
+  // safety_stock 增加安全库存 | supplier 调整洗涤供应商 | peak_limit 限制高峰连住订单
+  @Column() type: string;
+  @Column({ type: 'text' }) detail: string;
   @CreateDateColumn() createdAt: Date;
 }
 
@@ -227,7 +263,10 @@ export class Compensation {
   @Column({ nullable: true }) reviewId: number;
   @Column({ nullable: true }) incidentId: number;
   @Column({ nullable: true }) bookingId: number;
-  @Column() type: string; // cash 现金 | voucher 补偿券 | refund 退款
+  @Column({ nullable: true }) linenBlockId: number; // 布草延迟待客补偿
+  // cash 现金 | voucher 补偿券 | refund 退款
+  // afternoon_tea 下午茶 | room_change 换房 | late_checkin 延迟入住补偿
+  @Column() type: string;
   @Money() amount: number;
   @Column({ nullable: true }) voucherCode: string;
   @Column({ default: 'issued' }) status: string; // issued | used | cancelled
@@ -237,6 +276,6 @@ export class Compensation {
 
 export const ALL_ENTITIES = [
   User, RoomType, Room, Channel, DailyPrice, DailyInventory, Booking,
-  CleaningTask, LinenItem, LinenDelivery, MaintenanceTicket, BreakfastPrep,
-  Incident, Review, Compensation,
+  CleaningTask, LinenItem, LinenDelivery, LinenBlock, LinenAction,
+  MaintenanceTicket, BreakfastPrep, Incident, Review, Compensation,
 ];

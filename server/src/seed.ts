@@ -4,8 +4,8 @@ import { DataSource, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import {
   ALL_ENTITIES, Booking, BreakfastPrep, Channel, CleaningTask, Compensation,
-  DailyInventory, DailyPrice, Incident, LinenDelivery, LinenItem, MaintenanceTicket,
-  Review, Room, RoomType, User,
+  DailyInventory, DailyPrice, Incident, LinenBlock, LinenDelivery, LinenItem,
+  MaintenanceTicket, Review, Room, RoomType, User,
 } from './entities';
 import { eachDay, round2 } from './common/util';
 
@@ -28,6 +28,7 @@ export class SeedService implements OnApplicationBootstrap {
     @InjectRepository(CleaningTask) private cleaning: Repository<CleaningTask>,
     @InjectRepository(LinenItem) private linen: Repository<LinenItem>,
     @InjectRepository(LinenDelivery) private deliveries: Repository<LinenDelivery>,
+    @InjectRepository(LinenBlock) private linenBlocks: Repository<LinenBlock>,
     @InjectRepository(MaintenanceTicket) private maintenance: Repository<MaintenanceTicket>,
     @InjectRepository(BreakfastPrep) private preps: Repository<BreakfastPrep>,
     @InjectRepository(Incident) private incidents: Repository<Incident>,
@@ -45,6 +46,10 @@ export class SeedService implements OnApplicationBootstrap {
 
   private async seed() {
     const pwd = await bcrypt.hash('123456', 10);
+    // 今日「布草堵车」现场相对服务启动锚定（30 分钟前堵在路上，预计 2.5 小时后到），任何时区打开都是进行中
+    const now = new Date();
+    const blockedSince = new Date(now.getTime() - 30 * 60000);
+    const linenEta = new Date(now.getTime() + 150 * 60000);
     const [owner, steward, cleaner1, cleaner2, kitchen, front] = await this.users.save([
       { username: 'owner', passwordHash: pwd, name: '店主·陈山', role: 'owner' },
       { username: 'steward', passwordHash: pwd, name: '管家·小林', role: 'housekeeper' },
@@ -100,7 +105,7 @@ export class SeedService implements OnApplicationBootstrap {
     const mkBooking = async (p: {
       room: string; channel: Channel; guest: string; phone?: string;
       in: string; out: string; adults: number; children?: number; extraBeds?: number;
-      pets?: number; breakfast?: number; dietary?: string; invoice?: string;
+      pets?: number; breakfast?: number; dietary?: string; invoice?: string; specialRequests?: string;
       status?: string; actualIn?: string; actualOut?: string; depositDeducted?: number;
     }) => {
       const room = roomByCode(p.room);
@@ -127,6 +132,7 @@ export class SeedService implements OnApplicationBootstrap {
         adults: p.adults, children: p.children || 0, extraBeds, pets: p.pets || 0,
         breakfastCount: breakfast, dietaryNotes: p.dietary || '',
         invoiceRequired: !!p.invoice, invoiceTitle: p.invoice || '',
+        specialRequests: p.specialRequests || '',
         roomFee: round2(roomFee), extraBedFee, breakfastFee, petFee,
         totalAmount: round2(roomFee + extraBedFee + breakfastFee + petFee),
         depositAmount: Number(type.depositAmount), depositDeducted,
@@ -167,6 +173,8 @@ export class SeedService implements OnApplicationBootstrap {
     // 10-04 山景大床房超卖：102 住到 10-05、103 已订、101 被 OTA 连下两单
     const bk13 = await mkBooking({ room: '101', channel: ota, guest: '曹先生', in: '2026-10-04', out: '2026-10-05', adults: 2, breakfast: 2 });
     const bk14 = await mkBooking({ room: '101', channel: ota, guest: '谢女士', in: '2026-10-04', out: '2026-10-05', adults: 2, breakfast: 2 });
+    // 10-03 今日到店：103 房上一轮客人刚退房、保洁刚做完，布草车却因山路堵车未到
+    const bk20 = await mkBooking({ room: '103', channel: ota, guest: '沈女士一家', phone: '139****2077', in: '2026-10-03', out: '2026-10-04', adults: 2, children: 1, breakfast: 0, specialRequests: '到店较早，希望14点前入住' });
 
     // ---- 事件链 ----
     await this.incidents.save([
@@ -194,24 +202,46 @@ export class SeedService implements OnApplicationBootstrap {
       { roomId: bk3.roomId, bookingId: bk3.id, date: '2026-10-03', dirtiness: 'heavy', status: 'pending', linenUsed: 0 },
       { roomId: bk4.roomId, bookingId: bk4.id, date: '2026-10-02', dirtiness: 'light', status: 'inspected', assigneeId: cleaner1.id, scheduledStart: new Date('2026-10-02T11:30:00+08:00'), startedAt: new Date('2026-10-02T11:35:00+08:00'), finishedAt: new Date('2026-10-02T12:05:00+08:00'), linenUsed: 1 },
       { roomId: bk17.roomId, bookingId: bk17.id, date: '2026-10-02', dirtiness: 'normal', status: 'done', assigneeId: cleaner2.id, scheduledStart: new Date('2026-10-02T13:00:00+08:00'), startedAt: new Date('2026-10-02T13:00:00+08:00'), finishedAt: new Date('2026-10-02T13:45:00+08:00'), linenUsed: 1 },
+      // 103 房今日打扫已完成，但布草车堵车未到，无法换布验收交付
+      { roomId: bk20.roomId, bookingId: null, date: '2026-10-03', dirtiness: 'normal', status: 'done', assigneeId: cleaner1.id, scheduledStart: new Date(blockedSince.getTime() - 40 * 60000), startedAt: new Date(blockedSince.getTime() - 35 * 60000), finishedAt: blockedSince, linenUsed: 1, notes: '打扫完成，等布草车送床单' },
     ] as any);
     await this.rooms.update(bk1.roomId, { status: 'inspected' });
     await this.rooms.update(bk2.roomId, { status: 'inspected' });
     await this.rooms.update(bk4.roomId, { status: 'inspected' });
     await this.rooms.update(bk17.roomId, { status: 'clean' });
+    await this.rooms.update(bk20.roomId, { status: 'awaiting_linen' });
 
     // ---- 布草 ----
     await this.linen.save([
-      { item: '床单', total: 60, inUse: 18, inWash: 10, damaged: 2 },
-      { item: '被套', total: 60, inUse: 18, inWash: 10, damaged: 1 },
-      { item: '毛巾', total: 120, inUse: 40, inWash: 16, damaged: 4 },
-      { item: '枕套', total: 80, inUse: 24, inWash: 8, damaged: 2 },
+      { item: '床单', total: 60, inUse: 18, inWash: 10, damaged: 2, safetyStock: 8 },
+      { item: '被套', total: 60, inUse: 18, inWash: 10, damaged: 1, safetyStock: 8 },
+      { item: '毛巾', total: 120, inUse: 40, inWash: 16, damaged: 4, safetyStock: 15 },
+      { item: '枕套', total: 80, inUse: 24, inWash: 8, damaged: 2, safetyStock: 10 },
     ] as any);
-    await this.deliveries.save([
-      { item: '床单', quantity: 20, expectedAt: new Date('2026-10-02T09:00:00+08:00'), arrivedAt: new Date('2026-10-02T16:20:00+08:00'), status: 'delayed' },
-      { item: '被套', quantity: 20, expectedAt: new Date('2026-10-01T09:00:00+08:00'), arrivedAt: new Date('2026-10-01T08:40:00+08:00'), status: 'delivered' },
-      { item: '毛巾', quantity: 30, expectedAt: new Date('2026-10-04T10:00:00+08:00'), status: 'scheduled' },
-    ] as any);
+    await this.deliveries.save(this.deliveries.create({
+      item: '床单', quantity: 20, expectedAt: new Date('2026-10-02T09:00:00+08:00'),
+      arrivedAt: new Date('2026-10-02T16:20:00+08:00'), status: 'delayed',
+      reason: '山路堵车', supplier: '山外洁净洗涤厂',
+    }));
+    await this.deliveries.save(this.deliveries.create({
+      item: '毛巾', quantity: 30, expectedAt: new Date('2026-10-03T09:30:00+08:00'),
+      arrivedAt: new Date('2026-10-03T12:40:00+08:00'), status: 'delayed',
+      reason: '上午山路临时交通管制', supplier: '山外洁净洗涤厂',
+    }));
+    await this.deliveries.save(this.deliveries.create({
+      item: '被套', quantity: 20, expectedAt: new Date('2026-10-01T09:00:00+08:00'),
+      arrivedAt: new Date('2026-10-01T08:40:00+08:00'), status: 'delivered',
+      supplier: '山外洁净洗涤厂',
+    }));
+    // 今日下午布草车仍堵在路上：103 房保洁已完成，等这一单布草交付
+    const dlToday = await this.deliveries.save(this.deliveries.create({
+      item: '床单', quantity: 12, expectedAt: linenEta,
+      status: 'scheduled', reason: '午后山路堵车，布草车晚点', supplier: '山外洁净洗涤厂',
+    }));
+    await this.deliveries.save(this.deliveries.create({
+      item: '毛巾', quantity: 30, expectedAt: new Date('2026-10-04T10:00:00+08:00'),
+      status: 'scheduled', supplier: '山外洁净洗涤厂',
+    }));
 
     // ---- 早餐备餐 ----
     await this.preps.save([
@@ -237,6 +267,28 @@ export class SeedService implements OnApplicationBootstrap {
       { reviewId: rv1.id, bookingId: bk3.id, type: 'voucher', amount: 100, voucherCode: 'VC7K2Q9P', status: 'issued', reason: '空调故障差评补偿', createdAt: new Date('2026-10-03T14:00:00+08:00') },
       { reviewId: rv2.id, bookingId: bk16.id, type: 'cash', amount: 50, voucherCode: null, status: 'issued', reason: '早餐不足差评补偿', createdAt: new Date('2026-10-03T11:00:00+08:00') },
     ] as any);
+
+    // ---- 今日布草堵车：103 房待布草，沈女士一家无法按时入住 ----
+    const linenIncident = await this.incidents.save(this.incidents.create({
+      type: 'linen_delay', bookingId: bk20.id, roomId: bk20.roomId,
+      description: '布草车山路堵车未到，103 房保洁已完成但缺「床单」1 套，'
+        + `预计 ${linenEta.toLocaleString('zh-CN')} 到达，沈女士一家提前到店约等待 150 分钟，房间暂无法交付；可调拨房间 101`,
+      status: 'open', cost: 0, occurredAt: blockedSince,
+    }));
+    const block = await this.linenBlocks.save(this.linenBlocks.create({
+      roomId: bk20.roomId, bookingId: bk20.id, deliveryId: dlToday.id, incidentId: linenIncident.id,
+      item: '床单', shortage: 1,
+      expectedAt: linenEta,
+      blockedSince,
+      status: 'active', waitMinutes: 150, transferRoomIds: String(roomByCode('101').id),
+      note: '管家已在大堂接待，先安排下午茶；如布草持续不到则换房 101',
+    }));
+    await this.compensations.save(this.compensations.create({
+      linenBlockId: block.id, bookingId: bk20.id, incidentId: linenIncident.id,
+      type: 'afternoon_tea', amount: 68, status: 'issued',
+      reason: '布草延迟待客·下午茶（沈女士一家 3 位）',
+      createdAt: new Date(blockedSince.getTime() + 10 * 60000),
+    }));
   }
 }
 

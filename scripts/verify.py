@@ -32,7 +32,7 @@ check('超卖被识别(10-01双床/10-04大床)', len(oversold) >= 2, str(overso
 
 print('== 3. 订单全链路 ==')
 bookings = call('GET', '/bookings', T)
-check('19张种子订单', len(bookings) == 19)
+check('20张种子订单', len(bookings) == 20)
 b3 = [b for b in bookings if b['guestName'] == '王先生一家'][0]
 detail = call('GET', f"/bookings/{b3['id']}", T)
 check('订单详情含事件链', len(detail['incidents']) >= 2)  # ac_failure + bad_review
@@ -85,9 +85,84 @@ check('保洁验收', insp['status'] == 'inspected')
 # 布草延迟事件
 dv = call('POST', '/linen/deliveries', T, {'item': '毛巾', 'quantity': 10, 'expectedAt': '2026-10-01T08:00:00+08:00'})
 dv2 = call('POST', f"/linen/deliveries/{dv['id']}/arrive", T)
-check('超时签收记为延迟', dv2['status'] == 'delayed')
+check('超时签收记为延迟', dv2['delivery']['status'] == 'delayed')
 inc = call('GET', '/incidents?type=linen_delay&status=open', T)
 check('布草延迟事件生成', len(inc) >= 1)
+
+print('== 4b. 布草堵车·待布草阻塞入住全链路 ==')
+# 种子已埋：103 房保洁已完成、布草车山路堵车未到，沈女士一家提前到店等待
+blocks = call('GET', '/linen/blocks', T)
+b103 = [b for b in blocks if b['room']['code'] == '103' and b['status'] == 'active'][0]
+check('平台记录布草缺口/ETA', b103['item'] == '床单' and b103['shortage'] == 1 and bool(b103['expectedAt']))
+check('平台记录客人等待时间', b103['waitedMinutes'] > 0 and b103['booking']['guestName'] == '沈女士一家')
+check('平台匹配可调拨房间', any(r['code'] == '101' for r in b103['transferRooms']))
+bk20 = b103['booking']['id']
+deny = call('POST', f'/bookings/{bk20}/check-in', T)
+check('待布草房入住被409拦截', deny.get('statusCode') == 409, deny.get('message', ''))
+# 管家补偿：下午茶 + 延迟入住
+c1 = call('POST', f"/linen/blocks/{b103['id']}/compensate", T, {'type': 'afternoon_tea', 'amount': 30})
+check('下午茶补偿登记', c1.get('linenBlockId') == b103['id'] and float(c1['amount']) == 30)
+c2 = call('POST', f"/linen/blocks/{b103['id']}/compensate", T, {'type': 'late_checkin', 'amount': 40})
+check('延迟入住补偿登记', c2.get('type') == 'late_checkin' and float(c2['amount']) == 40)
+badcomp = call('POST', f"/linen/blocks/{b103['id']}/compensate", T, {'type': 'room_change', 'amount': 1})
+check('换房不走补偿接口', badcomp.get('statusCode') == 400)
+oc1 = call('GET', '/linen/ops-cost?date=2026-10-03', T)
+check('待客补偿进入当日运营成本', float(oc1['linenGuestCompensation']) >= 138, str(oc1['linenGuestCompensation']))  # 种子68 + 30 + 40
+check('当日成本按补偿类型拆分', float(oc1['byType']['afternoon_tea']) == 98 and float(oc1['byType']['late_checkin']) == 40, str(oc1['byType']))
+# 布草到达：房态自动从待布草转为可入住，事件自动关闭
+arr = call('POST', f"/linen/deliveries/{b103['delivery']['id']}/arrive", T)
+check('签收联动恢复待布草房', b103['id'] in arr.get('resolvedBlockIds', []))
+rooms2 = call('GET', '/rooms', T)
+check('房态自动转为可入住', [r for r in rooms2 if r['code'] == '103'][0]['status'] == 'inspected')
+ci = call('POST', f'/bookings/{bk20}/check-in', T)
+check('布草到达后可办理入住', ci.get('status') == 'checked_in')
+inc103 = call('GET', '/incidents?type=linen_delay', T)
+check('布草延迟事件自动关闭', all(i['status'] == 'resolved' for i in inc103 if i.get('roomId') == b103['roomId']))
+oc2 = call('GET', '/linen/ops-cost?date=2026-10-03', T)
+check('当日运营成本保留补偿合计', float(oc2['total']) >= 138)
+
+# 管家手工登记缺口 + 换房调拨（403 跨房型调到空房 203）
+r403 = [r for r in rooms2 if r['code'] == '403'][0]
+r203 = [r for r in rooms2 if r['code'] == '203'][0]
+web_c = [c for c in call('GET', '/channels', T) if c['code'] == 'web'][0]
+nb = call('POST', '/bookings', T, {'roomId': r403['id'], 'channelId': web_c['id'], 'guestName': '布草换房测试',
+    'checkIn': '2026-10-03', 'checkOut': '2026-10-04', 'adults': 2})
+def inv_booked(type_name, date='2026-10-03'):
+    rows = call('GET', f'/inventory?from={date}&to={date}', T)
+    t = [r for r in rows if r['typeName'] == type_name][0]
+    return t['days'][0]['booked']
+loft_before, twin_before = inv_booked('Loft观景套房'), inv_booked('庭院双床房')
+bl2 = call('POST', '/linen/blocks', T, {'roomId': r403['id'], 'bookingId': nb['id'], 'item': '被套', 'shortage': 1,
+    'expectedAt': '2026-10-03T23:00:00+08:00', 'transferRoomIds': [r203['id']]})
+check('手工登记待布草并接受指定调拨房', bl2.get('status') == 'active'
+      and any(x['code'] == '203' for x in bl2.get('transferRooms', [])), str(bl2.get('transferRooms')))
+dup = call('POST', '/linen/blocks', T, {'roomId': r403['id'], 'expectedAt': '2026-10-03T23:00:00+08:00'})
+check('同房重复登记被拒', dup.get('statusCode') == 400)
+rc = call('POST', f"/linen/blocks/{bl2['id']}/room-change", T, {'targetRoomId': r203['id'], 'amount': 0})
+check('换房调拨成功', rc.get('type') == 'room_change')
+nb2 = call('GET', f"/bookings/{nb['id']}", T)
+check('订单已调至203房', nb2['room']['code'] == '203')
+check('换房同步转移房型库存占用',
+      inv_booked('Loft观景套房') == loft_before - 1 and inv_booked('庭院双床房') == twin_before + 1,
+      f"{loft_before}->{inv_booked('Loft观景套房')}, {twin_before}->{inv_booked('庭院双床房')}")
+# 被套随后送达：原 403 房自动恢复可入住
+dvq = call('POST', '/linen/deliveries', T, {'item': '被套', 'quantity': 5, 'expectedAt': '2026-10-03T12:00:00+08:00'})
+call('POST', f"/linen/deliveries/{dvq['id']}/arrive", T)
+rooms4 = call('GET', '/rooms', T)
+check('布草到达原房恢复可入住', [r for r in rooms4 if r['code'] == '403'][0]['status'] == 'inspected')
+
+# 布草延迟多次出现：平台提示增加安全库存 / 调整供应商 / 限制高峰连住
+adv = call('GET', '/analytics/linen-advice', T)
+check('多次延迟触发三类处置建议', {a['type'] for a in adv['advices']} >= {'safety_stock', 'supplier', 'peak_limit'})
+check('供应商延迟被统计归因', any(s['delayed'] > 0 and s['delayRate'] > 0 for s in adv['suppliers']))
+sa = call('POST', '/analytics/linen-action', T, {'type': 'safety_stock', 'items': [{'item': '床单', 'safetyStock': 20}]})
+check('增加安全库存动作落地', sa.get('ok') is True)
+stk = {s['item']: s for s in call('GET', '/linen/stock', T)}
+check('安全库存已上调并标记安全线', stk['床单']['safetyStock'] == 20 and 'belowSafety' in stk['床单'])
+sup = call('POST', '/analytics/linen-action', T, {'type': 'supplier', 'supplier': '县城洁净洗涤厂（清晨首班）'})
+check('调整洗涤供应商动作记录', sup.get('ok') is True)
+pl = call('POST', '/analytics/linen-action', T, {'type': 'peak_limit', 'from': '2026-10-04', 'to': '2026-10-05'})
+check('限制高峰连住房量已执行', pl.get('ok') is True and pl['changed'] >= 1)
 
 print('== 5. 早餐 ==')
 bp = call('GET', '/breakfast/plan?date=2026-10-04', T)

@@ -43,6 +43,17 @@ export const ROOM_STATUS = {
   cleaning: { text: '打扫中', color: 'blue' },
   inspected: { text: '已验收', color: 'cyan' },
   maintenance: { text: '维修中', color: 'red' },
+  awaiting_linen: { text: '待布草', color: 'volcano' },
+};
+export const LINEN_COMP_TYPES = {
+  afternoon_tea: { text: '下午茶', color: 'gold' },
+  room_change: { text: '换房', color: 'purple' },
+  late_checkin: { text: '延迟入住补偿', color: 'orange' },
+};
+export const BLOCK_STATUS = {
+  active: { text: '待布草', color: 'red' },
+  reassigned: { text: '已换房', color: 'purple' },
+  resolved: { text: '布草已到', color: 'green' },
 };
 export const TASK_STATUS = {
   pending: { text: '待派单', color: 'orange' },
