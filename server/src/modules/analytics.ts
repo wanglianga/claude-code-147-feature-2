@@ -195,6 +195,41 @@ export class AnalyticsController {
     };
   }
 
+  // 当日运营成本：保洁/布草洗涤/早餐/维修/补偿（含布草延迟补偿）逐日归集
+  @Get('daily-costs')
+  async dailyCosts(@Query('date') date?: string) {
+    const d = date || todayStr();
+    const dayStart = new Date(`${d}T00:00:00+08:00`);
+    const dayEnd = new Date(`${d}T23:59:59.999+08:00`);
+    const inDay = (t: Date) => t && new Date(t) >= dayStart && new Date(t) <= dayEnd;
+    const cleaningTasks = await this.cleaning.find({ where: { date: d } });
+    const linenUsed = cleaningTasks.reduce((s, t) => s + t.linenUsed, 0);
+    const prep = await this.preps.findOne({ where: { date: d } });
+    const maintenance = (await this.maintenance.find()).filter((m) => inDay(m.reportedAt));
+    const comps = (await this.compensations.find({ order: { id: 'DESC' } }))
+      .filter((c) => c.status !== 'cancelled' && inDay(c.createdAt));
+    const costs = {
+      cleaning: round2(cleaningTasks.length * CLEANING_COST_PER_TASK),
+      linen: round2(linenUsed * LINEN_WASH_COST),
+      breakfast: round2((prep?.preparedPortions || 0) * BREAKFAST_COST_PER_PORTION),
+      maintenance: round2(maintenance.reduce((s, m) => s + Number(m.cost), 0)),
+      compensation: round2(comps.reduce((s, c) => s + Number(c.amount), 0)),
+    };
+    const total = round2(Object.values(costs).reduce((s, v) => s + v, 0));
+    return {
+      date: d, costs, total,
+      details: {
+        cleaningTasks: cleaningTasks.length,
+        linenUsed,
+        breakfastPortions: prep?.preparedPortions || 0,
+        maintenanceTickets: maintenance.length,
+        compensations: comps.map((c) => ({
+          id: c.id, type: c.type, amount: c.amount, reason: c.reason, bookingId: c.bookingId,
+        })),
+      },
+    };
+  }
+
   // 下一轮节假日可售房量建议：根据超卖、布草延迟、早餐投诉、补偿成本自动调整
   @Get('adjustment')
   async adjustment() {
@@ -204,7 +239,10 @@ export class AnalyticsController {
     const bookings = await this.bookings.find({ relations: ['channel'] });
     const comps = await this.compensations.find();
     const deliveries = await this.deliveries.find();
-    const linenDelayCount = deliveries.filter((d) => d.status === 'delayed').length;
+    const now = new Date();
+    // 延迟率：已记延迟 + 逾期未到的在途配送（如山路堵车）都算延迟风险
+    const linenDelayCount = deliveries.filter((d) =>
+      d.status === 'delayed' || (d.status === 'scheduled' && new Date(d.expectedAt) < now)).length;
     const linenDelayRate = deliveries.length ? linenDelayCount / deliveries.length : 0;
     const breakfastShortages = incidents.filter((i) => i.type === 'breakfast_shortage').length;
 

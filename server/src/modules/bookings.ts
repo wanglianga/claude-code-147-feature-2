@@ -161,6 +161,10 @@ export class BookingsController {
     const b = await this.bookings.findOne({ where: { id } });
     if (!b) throw new NotFoundException('订单不存在');
     if (b.status !== 'booked') throw new BadRequestException('仅待入住订单可办理入住');
+    const room = await this.rooms.findOne({ where: { id: b.roomId } });
+    if (room?.status === 'awaiting_linen') {
+      throw new BadRequestException('布草延迟未到，房间待布草无法交付，请先调拨换房或等待布草送达');
+    }
     b.status = 'checked_in';
     b.actualCheckIn = new Date();
     return this.bookings.save(b);

@@ -43,6 +43,16 @@ export const ROOM_STATUS = {
   cleaning: { text: '打扫中', color: 'blue' },
   inspected: { text: '已验收', color: 'cyan' },
   maintenance: { text: '维修中', color: 'red' },
+  awaiting_linen: { text: '待布草', color: 'purple' },
+};
+export const SHORTAGE_STATUS = {
+  waiting: { text: '等待布草', color: 'red' },
+  resolved: { text: '已恢复', color: 'green' },
+  relocated: { text: '已调拨换房', color: 'blue' },
+};
+export const COMP_TYPES = {
+  cash: '现金', voucher: '补偿券', refund: '退款',
+  afternoon_tea: '下午茶', late_checkin: '延迟入住补偿',
 };
 export const TASK_STATUS = {
   pending: { text: '待派单', color: 'orange' },

@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { Card, Col, DatePicker, Row, Statistic, Table, Tag } from 'antd';
 import dayjs from 'dayjs';
-import api, { INCIDENT_TYPES, REVIEW_CATEGORIES } from '../api';
+import api, { INCIDENT_TYPES, REVIEW_CATEGORIES, COMP_TYPES } from '../api';
 import Chart from '../components/Chart';
 
 export default function Dashboard() {
   const [range, setRange] = useState([dayjs('2026-09-28'), dayjs('2026-10-08')]);
   const [data, setData] = useState(null);
+  const [costDate, setCostDate] = useState(dayjs('2026-10-03'));
+  const [dailyCosts, setDailyCosts] = useState(null);
 
   const load = async (r = range) => {
     const d = await api.get('/analytics/dashboard', {
@@ -14,7 +16,10 @@ export default function Dashboard() {
     });
     setData(d);
   };
-  useEffect(() => { load(); }, []);
+  const loadCosts = async (d = costDate) => {
+    setDailyCosts(await api.get('/analytics/daily-costs', { params: { date: d.format('YYYY-MM-DD') } }));
+  };
+  useEffect(() => { load(); loadCosts(); }, []);
 
   if (!data) return <Card loading />;
   const { kpi } = data;
@@ -82,6 +87,40 @@ export default function Dashboard() {
                 data: data.reviewByCategory.map((r) => ({ name: REVIEW_CATEGORIES[r.category] || r.category, value: r.count })),
                 label: { formatter: '{b}: {c}条' } }],
             }} />
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title="当日运营成本（保洁/布草/早餐/维修/补偿）"
+            extra={<DatePicker value={costDate} allowClear={false} size="small"
+              onChange={(d) => { setCostDate(d); loadCosts(d); }} />}>
+            {dailyCosts && (
+              <>
+                <Row gutter={8}>
+                  {[
+                    { title: '保洁', value: dailyCosts.costs.cleaning, suffix: `（${dailyCosts.details.cleaningTasks}单）` },
+                    { title: '布草洗涤', value: dailyCosts.costs.linen, suffix: `（${dailyCosts.details.linenUsed}套）` },
+                    { title: '早餐食材', value: dailyCosts.costs.breakfast, suffix: `（${dailyCosts.details.breakfastPortions}份）` },
+                    { title: '维修', value: dailyCosts.costs.maintenance, suffix: `（${dailyCosts.details.maintenanceTickets}单）` },
+                    { title: '补偿支出', value: dailyCosts.costs.compensation, red: true },
+                    { title: '合计', value: dailyCosts.total, red: true },
+                  ].map((c) => (
+                    <Col span={8} key={c.title} style={{ marginBottom: 8 }}>
+                      <Statistic title={c.title} value={c.value} precision={2} prefix="¥"
+                        valueStyle={{ fontSize: 18, color: c.red ? '#cf1322' : undefined }}
+                        suffix={c.suffix && <span style={{ fontSize: 12, color: '#999' }}>{c.suffix}</span>} />
+                    </Col>
+                  ))}
+                </Row>
+                {dailyCosts.details.compensations.length > 0 && (
+                  <Table style={{ marginTop: 8 }} size="small" rowKey="id" pagination={false}
+                    dataSource={dailyCosts.details.compensations} columns={[
+                      { title: '补偿方式', dataIndex: 'type', width: 110, render: (v) => <Tag>{COMP_TYPES[v] || v}</Tag> },
+                      { title: '金额', dataIndex: 'amount', width: 80, render: (v) => `¥${v}` },
+                      { title: '原因', dataIndex: 'reason' },
+                    ]} />
+                )}
+              </>
+            )}
           </Card>
         </Col>
       </Row>

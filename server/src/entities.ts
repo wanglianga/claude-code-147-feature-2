@@ -42,7 +42,7 @@ export class Room {
   @PrimaryGeneratedColumn() id: number;
   @Column({ unique: true }) code: string;
   @Column({ default: 1 }) floor: number;
-  // 保洁状态：clean 已清洁 | dirty 待打扫 | cleaning 打扫中 | inspected 已验收 | maintenance 维修中
+  // 保洁状态：clean 已清洁 | dirty 待打扫 | cleaning 打扫中 | inspected 已验收 | maintenance 维修中 | awaiting_linen 待布草
   @Column({ default: 'clean' }) status: string;
   @Column() roomTypeId: number;
   @ManyToOne(() => RoomType) @JoinColumn({ name: 'roomTypeId' }) roomType: RoomType;
@@ -164,6 +164,25 @@ export class LinenDelivery {
   @CreateDateColumn() createdAt: Date;
 }
 
+// ---------- 布草缺口（保洁完成但布草未到，房间待布草无法交付） ----------
+@Entity('linen_shortages')
+export class LinenShortage {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() roomId: number;
+  @ManyToOne(() => Room) @JoinColumn({ name: 'roomId' }) room: Room;
+  @Column({ nullable: true }) bookingId: number;  // 等待入住的订单
+  @Column({ nullable: true }) deliveryId: number; // 关联的送洗配送单
+  @Column() item: string;                          // 缺口布草（床单/被套…）
+  @Column({ default: 1 }) quantity: number;        // 缺口套数
+  @Column({ type: 'timestamptz' }) expectedAt: Date;                 // 布草预计到达
+  @Column({ type: 'timestamptz', default: () => 'now()' }) waitingSince: Date; // 客人开始等待
+  @Column({ type: 'timestamptz', nullable: true }) resolvedAt: Date;
+  // waiting 等待中 | resolved 布草到达已恢复 | relocated 客人已调拨换房
+  @Column({ default: 'waiting' }) status: string;
+  @Column({ default: '' }) resolution: string;
+  @CreateDateColumn() createdAt: Date;
+}
+
 // ---------- 维修 ----------
 @Entity('maintenance_tickets')
 export class MaintenanceTicket {
@@ -237,6 +256,6 @@ export class Compensation {
 
 export const ALL_ENTITIES = [
   User, RoomType, Room, Channel, DailyPrice, DailyInventory, Booking,
-  CleaningTask, LinenItem, LinenDelivery, MaintenanceTicket, BreakfastPrep,
+  CleaningTask, LinenItem, LinenDelivery, LinenShortage, MaintenanceTicket, BreakfastPrep,
   Incident, Review, Compensation,
 ];

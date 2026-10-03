@@ -4,7 +4,7 @@ import { DataSource, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import {
   ALL_ENTITIES, Booking, BreakfastPrep, Channel, CleaningTask, Compensation,
-  DailyInventory, DailyPrice, Incident, LinenDelivery, LinenItem, MaintenanceTicket,
+  DailyInventory, DailyPrice, Incident, LinenDelivery, LinenItem, LinenShortage, MaintenanceTicket,
   Review, Room, RoomType, User,
 } from './entities';
 import { eachDay, round2 } from './common/util';
@@ -13,6 +13,8 @@ import { eachDay, round2 } from './common/util';
  * 种子数据：2026 国庆旺季（10-01 ~ 10-08），今天为 10-03。
  * 覆盖完整住宿链路：多渠道订单、保洁、布草、维修、早餐、
  * 延迟退房/空调故障/布草延迟/临时加人/宠物损坏/早餐不足/超卖/差评与补偿。
+ * 布草延迟影响入住故事线：203 房保洁已完成，布草车因山路堵车未到，
+ * 房间「待布草」无法交付，客人苏女士等待中（可下午茶/延迟补偿/调拨换房）。
  */
 @Injectable()
 export class SeedService implements OnApplicationBootstrap {
@@ -28,6 +30,7 @@ export class SeedService implements OnApplicationBootstrap {
     @InjectRepository(CleaningTask) private cleaning: Repository<CleaningTask>,
     @InjectRepository(LinenItem) private linen: Repository<LinenItem>,
     @InjectRepository(LinenDelivery) private deliveries: Repository<LinenDelivery>,
+    @InjectRepository(LinenShortage) private shortages: Repository<LinenShortage>,
     @InjectRepository(MaintenanceTicket) private maintenance: Repository<MaintenanceTicket>,
     @InjectRepository(BreakfastPrep) private preps: Repository<BreakfastPrep>,
     @InjectRepository(Incident) private incidents: Repository<Incident>,
@@ -167,6 +170,8 @@ export class SeedService implements OnApplicationBootstrap {
     // 10-04 山景大床房超卖：102 住到 10-05、103 已订、101 被 OTA 连下两单
     const bk13 = await mkBooking({ room: '101', channel: ota, guest: '曹先生', in: '2026-10-04', out: '2026-10-05', adults: 2, breakfast: 2 });
     const bk14 = await mkBooking({ room: '101', channel: ota, guest: '谢女士', in: '2026-10-04', out: '2026-10-05', adults: 2, breakfast: 2 });
+    // 今日待入住：203 保洁已完成，但布草车因山路堵车未到，房间待布草无法交付，客人等待中
+    const bk20 = await mkBooking({ room: '203', channel: phone, guest: '苏女士', in: '2026-10-03', out: '2026-10-04', adults: 2, breakfast: 2 });
 
     // ---- 事件链 ----
     await this.incidents.save([
@@ -178,6 +183,7 @@ export class SeedService implements OnApplicationBootstrap {
       { type: 'breakfast_shortage', bookingId: null, roomId: null, description: '2026-10-03 早餐供应不足：需求 15 份，实际备餐 12 份，缺口 3 份', status: 'resolved', cost: 50, occurredAt: new Date('2026-10-03T08:40:00+08:00'), resolvedAt: new Date('2026-10-03T09:30:00+08:00'), resolution: '向受影响客人补偿并加急补做' },
       { type: 'oversell', bookingId: bk18.id, roomId: bk18.roomId, description: `10-01「庭院双床房」超售：电话与 OTA 同时订出 203，物理房量不足，吴女士到店无房等待 2 小时`, status: 'resolved', cost: 200, occurredAt: new Date('2026-10-01T18:30:00+08:00'), resolvedAt: new Date('2026-10-01T20:40:00+08:00'), resolution: '协调同房型升级并免单 ¥200' },
       { type: 'oversell', bookingId: bk14.id, roomId: bk14.roomId, description: `10-04「山景大床房」超售：OTA 连续下单致 101 重复售出（已订 4/物理 3），需提前协调`, status: 'open', cost: 0, occurredAt: new Date('2026-10-03T09:20:00+08:00') },
+      { type: 'linen_delay', bookingId: bk20.id, roomId: bk20.roomId, description: '保洁已完成，但布草车因山路堵车未到（床单应 09:00 到），203 房无法按时交付，客人苏女士 14:00 起等待入住', status: 'open', cost: 0, occurredAt: new Date('2026-10-03T14:00:00+08:00') },
     ] as any);
 
     // ---- 维修 ----
@@ -194,6 +200,8 @@ export class SeedService implements OnApplicationBootstrap {
       { roomId: bk3.roomId, bookingId: bk3.id, date: '2026-10-03', dirtiness: 'heavy', status: 'pending', linenUsed: 0 },
       { roomId: bk4.roomId, bookingId: bk4.id, date: '2026-10-02', dirtiness: 'light', status: 'inspected', assigneeId: cleaner1.id, scheduledStart: new Date('2026-10-02T11:30:00+08:00'), startedAt: new Date('2026-10-02T11:35:00+08:00'), finishedAt: new Date('2026-10-02T12:05:00+08:00'), linenUsed: 1 },
       { roomId: bk17.roomId, bookingId: bk17.id, date: '2026-10-02', dirtiness: 'normal', status: 'done', assigneeId: cleaner2.id, scheduledStart: new Date('2026-10-02T13:00:00+08:00'), startedAt: new Date('2026-10-02T13:00:00+08:00'), finishedAt: new Date('2026-10-02T13:45:00+08:00'), linenUsed: 1 },
+      // 203 入住前复查打扫已完成，但布草车未到，床品未能更换 → 房间待布草
+      { roomId: bk20.roomId, bookingId: bk20.id, date: '2026-10-03', dirtiness: 'light', status: 'done', assigneeId: cleaner1.id, scheduledStart: new Date('2026-10-03T10:00:00+08:00'), startedAt: new Date('2026-10-03T10:05:00+08:00'), finishedAt: new Date('2026-10-03T10:40:00+08:00'), linenUsed: 0, notes: '打扫完成，布草车因山路堵车未到，床品待更换' },
     ] as any);
     await this.rooms.update(bk1.roomId, { status: 'inspected' });
     await this.rooms.update(bk2.roomId, { status: 'inspected' });
@@ -212,6 +220,19 @@ export class SeedService implements OnApplicationBootstrap {
       { item: '被套', quantity: 20, expectedAt: new Date('2026-10-01T09:00:00+08:00'), arrivedAt: new Date('2026-10-01T08:40:00+08:00'), status: 'delivered' },
       { item: '毛巾', quantity: 30, expectedAt: new Date('2026-10-04T10:00:00+08:00'), status: 'scheduled' },
     ] as any);
+    // 布草车因山路堵车在途：应 10-03 09:00 到，至今未到（203 房等布草交付）
+    const stuckDelivery = await this.deliveries.save(this.deliveries.create({
+      item: '床单', quantity: 20, expectedAt: new Date('2026-10-03T09:00:00+08:00'), status: 'scheduled',
+    }));
+
+    // ---- 布草缺口（保洁完成但布草未到，房间待布草） ----
+    await this.shortages.save([
+      // 10-02 历史缺口：床单延迟到 16:20，202 房等待 140 分钟后恢复
+      { roomId: bk6.roomId, bookingId: bk6.id, deliveryId: null, item: '床单', quantity: 2, expectedAt: new Date('2026-10-02T15:00:00+08:00'), waitingSince: new Date('2026-10-02T14:00:00+08:00'), resolvedAt: new Date('2026-10-02T16:20:00+08:00'), status: 'resolved', resolution: '布草 16:20 送达，更换床品后恢复可入住', createdAt: new Date('2026-10-02T14:00:00+08:00') },
+      // 10-03 当前缺口：203 房待布草，苏女士等待中，预计 15:30 到
+      { roomId: bk20.roomId, bookingId: bk20.id, deliveryId: stuckDelivery.id, item: '床单', quantity: 2, expectedAt: new Date('2026-10-03T15:30:00+08:00'), waitingSince: new Date('2026-10-03T14:00:00+08:00'), status: 'waiting', createdAt: new Date('2026-10-03T14:00:00+08:00') },
+    ] as any);
+    await this.rooms.update(bk20.roomId, { status: 'awaiting_linen' });
 
     // ---- 早餐备餐 ----
     await this.preps.save([

@@ -4,7 +4,7 @@ import {
   Modal, Popconfirm, Select, Space, Table, Tabs, Tag, Timeline, message,
 } from 'antd';
 import dayjs from 'dayjs';
-import api, { BOOKING_STATUS, INCIDENT_TYPES, INCIDENT_STATUS, TASK_STATUS, DIRTINESS, REVIEW_CATEGORIES } from '../api';
+import api, { BOOKING_STATUS, INCIDENT_TYPES, INCIDENT_STATUS, TASK_STATUS, DIRTINESS, REVIEW_CATEGORIES, COMP_TYPES } from '../api';
 
 export default function Bookings() {
   const [list, setList] = useState([]);
@@ -218,7 +218,7 @@ function BookingDetail({ detail, refresh }) {
             {detail.compensations.length > 0 && (
               <Table style={{ marginTop: 12 }} size="small" rowKey="id" dataSource={detail.compensations}
                 pagination={false} columns={[
-                  { title: '类型', dataIndex: 'type', render: (v) => ({ cash: '现金', voucher: '补偿券', refund: '退款' }[v]) },
+                  { title: '类型', dataIndex: 'type', render: (v) => COMP_TYPES[v] || v },
                   { title: '金额', dataIndex: 'amount', render: (v) => `¥${v}` },
                   { title: '券码', dataIndex: 'voucherCode', render: (v) => v || '-' },
                   { title: '状态', dataIndex: 'status', render: (v) => ({ issued: '已发放', used: '已核销', cancelled: '已作废' }[v]) },
